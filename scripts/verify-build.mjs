@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {openDatabase,migrateDatabase} from '../server/sqlite.mjs';
+const text=await readFile('dist/server/index.js','utf8');
+const module=await import('data:text/javascript;base64,'+Buffer.from(text).toString('base64'));
+const worker=module.default;
+assert.equal(typeof worker.fetch,'function');
+const origin='https://qa.example.test';
+let r=await worker.fetch(new Request(origin),{});
+assert.equal(r.status,200);assert.match(r.headers.get('content-security-policy'),/script-src 'self'/);
+assert.equal(await r.text(),await readFile('public/index.html','utf8'));
+r=await worker.fetch(new Request(origin+'/LICENSE.txt'),{});assert.equal(r.status,200);assert.equal(await r.text(),await readFile('LICENSE','utf8'));
+assert.equal((await worker.fetch(new Request(origin+'/server/auth-node.mjs'),{})).status,404);
+assert.equal((await worker.fetch(new Request(origin+'/api/session'),{})).status,503);
+const db=openDatabase(':memory:');migrateDatabase(db);
+try{
+ const headers={'oai-authenticated-user-id':'synthetic-worker-a'};
+ r=await worker.fetch(new Request(origin+'/api/session',{headers}),{DB:db});
+ assert.equal(r.status,200);const session=await r.json();assert.equal(session.mode,'sites');assert.ok(session.user.id);
+ headers['X-Grudge-Owner']=session.user.id;
+ r=await worker.fetch(new Request(origin+'/api/notebook',{headers}),{DB:db});
+ assert.equal(r.status,200);const notebook=await r.json();assert.deepEqual(notebook.entries,[]);
+ const entry={id:'worker-qa-entry',target:'测试对象',title:'合成测试记录',details:'仅用于自动测试',occurred:'2026-10-15T18:00',severity:1,category:'其他恩怨',status:'open',targetUserId:null,shareInAggregate:false};
+ r=await worker.fetch(new Request(origin+'/api/notebook',{method:'PUT',headers:{...headers,Origin:origin,'X-Grudge-Request':'1','Content-Type':'application/json'},body:JSON.stringify({expectedRevision:notebook.revision,notebook:{version:1,entries:[entry],people:[],appliedMigrations:[]}})}),{DB:db});
+ assert.equal(r.status,200,await r.clone().text());assert.equal((await r.json()).entries.length,1);
+ const b=await(await worker.fetch(new Request(origin+'/api/session',{headers:{'oai-authenticated-user-id':'synthetic-worker-b'}}),{DB:db})).json();
+ r=await worker.fetch(new Request(origin+'/api/notebook',{headers:{'oai-authenticated-user-id':'synthetic-worker-b','X-Grudge-Owner':b.user.id}}),{DB:db});
+ assert.deepEqual((await r.json()).entries,[]);
+ r=await worker.fetch(new Request(origin+'/api/notebook',{headers:{'oai-authenticated-user-id':'synthetic-worker-b','X-Grudge-Owner':session.user.id}}),{DB:db});
+ assert.equal(r.status,409);
+ console.log('PASS: compiled Worker serves exact frontend, blocks private source, persists synthetic D1 records, isolates users, rejects stale owners.');
+}finally{db.close();}

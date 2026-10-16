@@ -1,0 +1,21 @@
+services:
+  grudge-book:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+      ENABLE_AGGREGATE: ${ENABLE_AGGREGATE:-true}
+      TRUSTED_PROXY_IP: ${TRUSTED_PROXY_IP:-}
+    volumes:
+      - grudge-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+volumes:
+  grudge-data:
